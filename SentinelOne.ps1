@@ -1,5 +1,6 @@
-#This module requires Powershell 7 or higher
-#Requires -Version 7.0
+# This module requires Powershell 7 or higher
+# Requires -Version 7.0
+# This fork includes a function to backup passphrases (Get-S1PassPhrases).
 
 class SentinelOne
 {
@@ -21,7 +22,8 @@ class SentinelOne
 		GetSites = @{Method = "GET"; URI = "/web/api/v2.1/sites?limit=1000"};
 		GetGroups = @{Method = "GET"; URI = "/web/api/v2.1/groups?limit=200&siteIds="};
 		GetExclusions = @{Method = "GET"; URI = "/web/api/v2.1/exclusions?limit=1000&type="};
-		SitePolicy = @{Method = "GET"; URI = "web/api/v2.1/sites/{site_id}/policy"}}
+		SitePolicy = @{Method = "GET"; URI = "web/api/v2.1/sites/{site_id}/policy"};
+        GetPassPhrases = @{Method = "GET"; URI = "/web/api/v2.1/agents/passphrases"}}
 
 	SentinelOne($Path)
 	{
@@ -44,6 +46,7 @@ class SentinelOne
 				"GetGroups" { $URI += $Parameters[0]; break}
 				"SitePolicy" { $URI = $URI.Replace("{site_id}", $Parameters[0]); break}
 				"GetExclusions" { $URI += $Parameters[1]; $URI += "&cursor=$($Parameters[4])"; ;if ($Parameters[0] -ne "Global") {$URI += "&siteIds=$($Parameters[2])"}; if ($Parameters[0] -eq "Group") {$URI += "&groupIds=$($Parameters[3])"}; break}
+                "GetPassPhrases" { $URI += $Parameters[0]; break}
 				Default {}
 			}
 
@@ -174,14 +177,14 @@ class SentinelOne
 		{
 			throw "Saved API tokens already contain a token with name $APITokenName. Remove existing token with `"Remove-S1APIToken -Name $APITokenName`""
 		}
-		
+
 		$this.APITokens.Add($APITokenName, @{"APIToken" = $APIToken; "Endpoint" = $Endpoint; "Description" = $Description})
 
 		if ($DoNotValidateToken -eq $false)
 		{
 			$this.ValidateAPIToken($APITokenName, $true)
 		}
-	
+
 		$this.WriteAPITokens()
 		return $true
 	}
@@ -203,7 +206,7 @@ class SentinelOne
 	[String] Hidden PrepareGetFilter($Parameters)
 	{
 		$filter = ""
-	
+
 		foreach ($Key in $Parameters.Keys)
 		{
 			switch -Exact ($Key)
@@ -228,7 +231,7 @@ class SentinelOne
 		}
 		return $filter
 	}
-	
+
 	[PSObject] GetAgents($APITokenName, $ResultSize, $Parameters)
 	{
 		$Return = @()
@@ -266,6 +269,47 @@ class SentinelOne
 		return $Return
 	}
 
+
+    ###########################
+    # JTP Testing
+    [PSObject] GetPassPhrases($APITokenName, $ResultSize, $Parameters)
+	{
+		$Return = @()
+		$GetAll = $false
+		if ($ResultSize -eq "All")
+		{
+			$ResultSize = 1000
+			$GetAll = $true
+		}
+		$Filter = "?$($this.PrepareGetFilter($Parameters))&limit=$ResultSize"
+		$FilterCursor = $Filter
+		$TotalPassPhrases = 0
+		Do
+		{
+			$Http = $this.MakeHTTPRequest($APITokenName, "GetPassPhrases", @($FilterCursor))
+			if ($Http.errors)
+			{
+				Write-Host "Error code: $($Http.errors.code)"
+				Write-Host "Error detail: $($Http.errors.detail)"
+				Write-Host "Error title: $($Http.errors.title)"
+				throw "Error while running Get-S1PassPhrase"
+			}
+			$Http.data | Add-Member -Value $APITokenName -Name "APITokenName" -MemberType NoteProperty
+			$Return += $Http.data
+			$FilterCursor = $Filter + "&cursor=$($Http.pagination.nextCursor)"
+			if ($Http.pagination.totalItems -gt 0)
+			{
+				$TotalPassPhrases = $Http.pagination.totalItems
+			}
+			if ($TotalPassPhrases -gt 1)
+			{
+				Write-Host "Completed $($Return.Count) passphrases from $TotalPassPhrases using API token $APITokenName..."
+			}
+		} While ($GetAll -and $null -ne $Http.pagination.nextCursor)
+		return $Return
+	}
+    ###########################
+
 	[Void] CheckAPITokenName($APITokenNames)
 	{
 		foreach ($APITokenName in $APITokenNames)
@@ -276,7 +320,7 @@ class SentinelOne
 			}
 		}
 	}
-	
+
 	[Datetime] parseRange($range)
 	{
 		#Relative range
@@ -338,7 +382,7 @@ class SentinelOne
 	{
 		$PostBody = @{data = @{files = $File; password = $Password}}
 		$PostBody = ConvertTo-Json -Compress -InputObject $PostBody
-		$Http = $this.MakeHTTPRequest($APITokenName, "FetchFiles", @($PostBody, $AgentID))		
+		$Http = $this.MakeHTTPRequest($APITokenName, "FetchFiles", @($PostBody, $AgentID))
 		if ($Http.data.success -eq $true)
 		{
 			return $true
@@ -435,12 +479,12 @@ class SentinelOne
 			if ($Scope -eq "Global")
 			{
 				$Http.data | Add-Member -Value "" -Name "accountName" -MemberType NoteProperty
-				$Http.data | Add-Member -Value "" -Name "accountId" -MemberType NoteProperty		
+				$Http.data | Add-Member -Value "" -Name "accountId" -MemberType NoteProperty
 			}
 			else
 			{
 				$Http.data | Add-Member -Value $AccountName -Name "accountName" -MemberType NoteProperty
-				$Http.data | Add-Member -Value $AccountId -Name "accountId" -MemberType NoteProperty				
+				$Http.data | Add-Member -Value $AccountId -Name "accountId" -MemberType NoteProperty
 			}
 			if ($Scope -eq "Account")
 			{
@@ -517,7 +561,7 @@ function Add-S1APIToken
 		[Parameter(Mandatory, HelpMessage="Enter SentinelOne API token")]
 		[ValidateLength(80,80)]
 		[String] $APIToken,
-			
+
 		[Parameter(Mandatory, HelpMessage="Enter SentinelOne API token endpoint URL (e.g. https://contoso.sentinelone.net/)")]
 		[String] $Endpoint,
 
@@ -527,10 +571,10 @@ function Add-S1APIToken
 		[Parameter(HelpMessage="Full path to encrypted file to save API token")]
 		[ValidateNotNullOrEmpty()]
 		[String] $Path = $(Join-Path $env:APPDATA "SentinelOneAPI.token"),
-		
+
 		[Switch] $DoNotValidateToken
 		)
-		
+
 	$API = [SentinelOne]::new($Path)
 
 	if ($API.AddAPIToken($APIToken, $Endpoint, $APITokenName, $Description, $DoNotValidateToken) -eq $true)
@@ -562,7 +606,7 @@ function Get-S1APIToken
 		[Parameter()]
 		[ValidateRange(1,10)]
 		[Int] $MaximumRetryCount = 2,
-		
+
 		[Switch] $ValidateAPIToken,
 		[Switch] $UnmaskAPIToken
 		)
@@ -593,7 +637,7 @@ function Get-S1APIToken
 	{
 		return ($Tokens | Where-Object APITokenName -eq $APITokenName)
 	}
-	
+
 }
 
 function Remove-S1APIToken
@@ -635,7 +679,7 @@ function Get-S1Agent
 		[Parameter()]
 		[ValidateNotNullOrEmpty()]
 		[Int] $MaximumRetryCount = 2,
-		
+
 		#Get-S1Agents filters
 		[Parameter()]
 		[ValidateNotNullOrEmpty()]
@@ -693,12 +737,12 @@ function Get-S1Agent
 		[Parameter()]
 		[ValidateNotNullOrEmpty()]
 		[Bool] $IsPendingUninstall,
-		
+
 		[Parameter()]
 		[ValidateNotNullOrEmpty()]
 		[Bool] $IsDecommissioned
 	)
-	
+
 	$API = [SentinelOne]::new($Path)
 	$API.CheckAPITokenName($APITokenName)
 	$API.SaveHTTPRetryParameters($RetryIntervalSec, $MaximumRetryCount)
@@ -739,7 +783,7 @@ function Get-S1DeepVisibility
 		[Parameter(HelpMessage="Enter Deep Visibility search query", ParameterSetName="Advanced")]
 		[ValidateNotNullOrEmpty()]
 		[String] $Query,
-		
+
 		[Parameter(ParameterSetName="Simple")][ValidateNotNullOrEmpty()][String] $EndpointName,
 		[Parameter(ParameterSetName="Simple")][ValidateNotNullOrEmpty()][String] $Sha256,
 		[Parameter(ParameterSetName="Simple")][ValidateNotNullOrEmpty()][String] $Sha1,
@@ -754,26 +798,26 @@ function Get-S1DeepVisibility
 		[Parameter(ParameterSetName="Simple")][ValidateNotNullOrEmpty()]
 		[ValidateSet("ip", "dns", "process", "cross_process", "indicators", "file", "registry", "scheduled_task", "url", "command_script", "logins")]
 		[String] $ObjectType,
-		
+
 		[Parameter(ParameterSetName="Simple")][ValidateNotNullOrEmpty()]
 		[ValidateSet("Login", "`"Registry Key Export`"", "Logout", "Unknown", "`"Pre Execution Detection`"", "Command Script", "HEAD", "DELETE", "Registry Key Security Changed", "File Scan", "PUT", "Remote Thread Creation", "OPTIONS", "DNS Unresolved", "Task Register", "Task Delete", "Task Update", "Duplicate Thread Handle", "IP Listen", "Task Start", "CONNECT", "GET", "Registry Value Create", "DNS Resolved", "Registry Key Create", "Process Creation", "Open Remote Process Handle", "Behavioral Indicators", "Duplicate Process Handle", "Task Trigger", "POST", "File Deletion", "Registry Value Modified", "Registry Value Delete", "Registry Key Delete", "Not Reported", "IP Connect", "File Modification", "File Creation", "File Rename")]
 		[String] $EventType,
-		
+
 		[Parameter(Mandatory, HelpMessage="Enter Deep Visibility search range")]
 		[String] $Earliest,
-		
+
 		[Parameter(HelpMessage="Enter Deep Visibility search range")]
 		[ValidateNotNullOrEmpty()]
 		[String] $Latest
 		)
-		
+
 	$API = [SentinelOne]::new($Path)
 	$API.CheckAPITokenName($APITokenName)
 	$API.SaveHTTPRetryParameters($RetryIntervalSec, $MaximumRetryCount)
 
 	$fromDate = $API.ParseRange($Earliest)
 	$fromDate = $(Get-Date -Date $($(Get-Date -Date $fromDate).ToUniversalTime()) -Format O)
-	
+
 	if($PSBoundParameters.ContainsKey("Latest"))
 	{
 		$toDate = $API.parseRange($Latest)
@@ -792,7 +836,7 @@ function Get-S1DeepVisibility
 	Write-Host "Search time:" -ForegroundColor Green
 	Write-Host "   From: $(Get-Date -Date $($(Get-Date -Date $fromDate).ToUniversalTime()) -Format "dddd, MMMM dd, yyyy HH:mm:ss.fff")"
 	Write-Host "   To:   $(Get-Date -Date $($(Get-Date -Date $toDate).ToUniversalTime()) -Format "dddd, MMMM dd, yyyy HH:mm:ss.fff")"
-   
+
 	#Building DV query
 	$QueryToRun = ""
 	foreach ($Key in $PSBoundParameters.Keys)
@@ -810,9 +854,9 @@ function Get-S1DeepVisibility
 			"CmdLine" {$QueryToRun += " AND CmdLine ContainsCIS `""+$CmdLine+"`""; Break }
 			"UserName" {$QueryToRun += " AND UserName ContainsCIS `""+$UserName+"`""; Break }
 			"EndpointName" {$QueryToRun += " AND EndpointName ContainsCIS `""+$EndpointName+"`""; Break }
-			"ObjectType"  {$QueryToRun += " AND ObjectType = `""+$ObjectType+"`""; Break } 
-			"EventType"  {$QueryToRun += " AND EventType = `""+$EventType+"`""; Break } 
-			"DstPort"  {$QueryToRun += " AND DstPort = `""+$DstPort+"`""; Break } 
+			"ObjectType"  {$QueryToRun += " AND ObjectType = `""+$ObjectType+"`""; Break }
+			"EventType"  {$QueryToRun += " AND EventType = `""+$EventType+"`""; Break }
+			"DstPort"  {$QueryToRun += " AND DstPort = `""+$DstPort+"`""; Break }
 			Default {}
 		}
 	}
@@ -822,7 +866,7 @@ function Get-S1DeepVisibility
 
 	#Submitting queries first
 	$submittedQueries = @{}
-	
+
 	$queryDetails = @{
 		fromDate = $(Get-Date -Date $($(Get-Date -Date $fromDate).ToUniversalTime()) -Format O);
 		toDate = $(Get-Date -Date $($(Get-Date -Date $toDate).ToUniversalTime()) -Format O);
@@ -862,7 +906,7 @@ function Get-S1DeepVisibility
 					$Return += Get-S1DeepVisibility -APITokenName $Key -Query $QueryToRun -Earliest $Earliest -Latest $Latest
 				}
 				else {
-					write-host "Checking query with API token $Key. Completed $($FinishedStatus[$Key].progressStatus)%, status $($FinishedStatus[$Key].responseState)"	
+					write-host "Checking query with API token $Key. Completed $($FinishedStatus[$Key].progressStatus)%, status $($FinishedStatus[$Key].responseState)"
 				}
 			}
 			if ($FinishedStatus[$Key].responseState -eq "FINISHED")
@@ -1117,7 +1161,7 @@ function Get-S1Site
 			}
 			else
 			{
-				return $Sites	
+				return $Sites
 			}
 		}
 		else
@@ -1193,7 +1237,7 @@ function Get-S1Exclusion
 			}
 			#Get Site exclusions
 			$Groups = $Sites | Get-S1Group -Path $Path -RetryIntervalSec $RetryIntervalSec -MaximumRetryCount $MaximumRetryCount
-			
+
 			foreach ($Group in $Groups)
 			{
 				$Exclusions += $api.GetS1Exclusions($APIToken, $Type, "Group", $($sites | Where-Object id -eq $Group.siteId).accountId, $($sites | Where-Object id -eq $Group.siteName).accountId, $Group.siteId, $Group.siteName, $Group.id, $Group.name)
@@ -1256,3 +1300,100 @@ function Get-S1Group
 	}
 }
 
+function Get-S1PassPhrase
+{
+	[CmdletBinding(PositionalBinding = $false)]
+	Param(
+		[Parameter(Mandatory, HelpMessage="Enter SentinelOne API token name")]
+		[String[]] $APITokenName,
+
+		[Parameter(HelpMessage="Full path to encrypted file to load API token")]
+		[ValidateNotNullOrEmpty()]
+		[String] $Path = $(Join-Path $env:APPDATA "SentinelOneAPI.token"),
+
+		[Parameter()]
+		[ValidateNotNullOrEmpty()]
+		[ValidateScript({$_ -eq "All" -or ([Int]::Parse($_) -ge 1 -and [int]::Parse($_) -le 1000)})]
+		[String] $ResultSize = "1000",
+
+		[Parameter()]
+		[ValidateNotNullOrEmpty()]
+		[Int] $RetryIntervalSec = 5,
+
+		[Parameter()]
+		[ValidateNotNullOrEmpty()]
+		[Int] $MaximumRetryCount = 2,
+
+		#Get-S1Agents filters
+		[Parameter()]
+		[ValidateNotNullOrEmpty()]
+		[String[]] $ComputerNameContains,
+
+		[Parameter()]
+		[ValidateSet("linux","macos","windows", "windows_legacy")]
+		[String[]] $OSTypes,
+
+		[Parameter()]
+		[ValidateNotNullOrEmpty()]
+		[String[]] $AgentVersions,
+
+		[Parameter()]
+		[ValidateNotNullOrEmpty()]
+		[Bool] $IsActive,
+
+		[Parameter()]
+		[ValidateNotNullOrEmpty()]
+		[Bool] $IsInfected,
+
+		[Parameter()]
+		[ValidateNotNullOrEmpty()]
+		[Bool] $IsUpToDate,
+
+		[Parameter()]
+		[ValidateNotNullOrEmpty()]
+		[Int] $NumberOfActiveThreatsEqualTo,
+
+		[Parameter()]
+		[ValidateNotNullOrEmpty()]
+		[Int] $NumberOfActiveThreatsGreaterThan,
+
+		[Parameter()]
+		[ValidateSet("finished","aborted","started", "none")]
+		[String] $ScanStatus,
+
+		[Parameter()]
+		[ValidateSet("kubernetes node","desktop","laptop", "server", "unknown")]
+		[String[]] $MachineTypes,
+
+		[Parameter()]
+		[ValidateSet("agent_suppressed_category", "incompatible_os", "incompatible_os_category", "missing_permissions_category", "none", "reboot_category", "reboot_needed",
+		"unprotected", "unprotected_category", "upgrade_needed", "user_action_needed", "user_action_needed_fda", "user_action_needed_network", "user_action_needed_rs_fda")]
+		[String[]] $UserActionsNeeded,
+
+		[Parameter()]
+		[ValidateSet("connected", "connecting", "disconnected", "disconnecting")]
+		[String[]] $NetworkStatuses,
+
+		[Parameter()]
+		[ValidateNotNullOrEmpty()]
+		[String[]] $AgentDomains,
+
+		[Parameter()]
+		[ValidateNotNullOrEmpty()]
+		[Bool] $IsPendingUninstall,
+
+		[Parameter()]
+		[ValidateNotNullOrEmpty()]
+		[Bool] $IsDecommissioned
+	)
+
+	$API = [SentinelOne]::new($Path)
+	$API.CheckAPITokenName($APITokenName)
+	$API.SaveHTTPRetryParameters($RetryIntervalSec, $MaximumRetryCount)
+	$Return = @()
+	foreach ($Name in $APITokenName)
+	{
+		$Return += $API.GetPassPhrases($Name, $ResultSize, $PSBoundParameters)
+	}
+	return $Return
+}
